@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>d3-link-area</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --fg: #1d1d1b; --muted: #6b6b66; --line: #dcdad4;
+    --old: #c8553d; --new: #2f6db3; --node: #1d1d1b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 17px; margin: 40px 0 4px; }
+  p { margin: 0 0 12px; color: var(--muted); max-width: 680px; }
+  code { font: 13px ui-monospace, Menlo, monospace; background: #efede8; padding: 1px 4px; border-radius: 3px; }
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 24px; margin: 16px 0; }
+  .controls label { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); }
+  .controls output { color: var(--fg); font-variant-numeric: tabular-nums; }
+  .controls input { width: 100%; }
+  .toggles { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  figure { margin: 0; border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 12px; }
+  figcaption { font-size: 13px; margin-bottom: 6px; padding-right: 110px; }
+  figcaption b { font-weight: 600; }
+  figcaption span { color: var(--muted); font-variant-numeric: tabular-nums; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .measure { stroke: var(--fg); stroke-width: 1; }
+  .center { fill: none; stroke: var(--fg); stroke-dasharray: 3 3; stroke-width: 1; }
+  .outline { fill: none; stroke: var(--fg); stroke-width: 0.75; }
+  figure { position: relative; }
+  .download { position: absolute; top: 8px; right: 8px; font: 12px system-ui, sans-serif; color: var(--fg); background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; cursor: pointer; }
+  .download:hover { background: #efede8; }
+</style>
+</head>
+<body>
+<main>
+  <h1>d3-link-area</h1>
+  <p>Links drawn as areas, for D3: the filled counterpart of d3.link. The edges are offset perpendicularly to the centerline, so the band keeps its visual thickness where it is steep, and it can change width from source to target.</p>
+
+  <h2>Two offset Béziers vs. perpendicular offset</h2>
+  <p>Drag the sliders. The black tick at the steepest point measures the thickness the eye actually reads.</p>
+  <div class="controls">
+    <label>Vertical drop <output id="o-dy"></output><input id="dy" type="range" min="0" max="320" value="200"></label>
+    <label>Source width <output id="o-w0"></output><input id="w0" type="range" min="0" max="120" value="50"></label>
+    <label>Target width <output id="o-w1"></output><input id="w1" type="range" min="0" max="120" value="50"></label>
+    <label>Gap between nodes <output id="o-gap"></output><input id="gap" type="range" min="40" max="300" value="200"></label>
+    <label>Curvature <output id="o-k"></output><input id="k" type="range" min="0.05" max="1" step="0.05" value="0.5"></label>
+    <label>Fillet <output id="o-f"></output><input id="f" type="range" min="0" max="2" step="0.1" value="1"></label>
+    <label>Tolerance (px) <output id="o-tol"></output><input id="tol" type="range" min="0.05" max="2" step="0.05" value="0.25"></label>
+  </div>
+  <div class="toggles">
+    <label><input id="showCenter" type="checkbox" checked> centerline</label>
+    <label><input id="showOutline" type="checkbox"> outline</label>
+  </div>
+  <div class="panels">
+    <figure><figcaption><b>Offset Béziers</b> · <span id="t-old"></span></figcaption><svg id="old"></svg></figure>
+    <figure><figcaption><b>linkAreaHorizontal()</b> · <span id="t-new"></span></figcaption><svg id="new"></svg></figure>
+  </div>
+
+  <h2>Alluvial with different widths</h2>
+  <p>Each flow leaves its source at one width and reaches its target at another (here the target column is rescaled), all as single closed paths.</p>
+  <figure><svg id="alluvial"></svg></figure>
+
+  <h2>Vertical</h2>
+  <p><code>linkAreaVertical()</code> swaps the axes.</p>
+  <figure><svg id="vertical"></svg></figure>
+</main>
+
+<script type="importmap">
+{
+  "imports": {
+    "d3": "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm",
+    "d3-shape": "https://cdn.jsdelivr.net/npm/d3-shape@3.2.0/+esm",
+    "d3-path": "https://cdn.jsdelivr.net/npm/d3-path@3.1.0/+esm"
+  }
+}
+</script>
+<script type="module">
+import * as d3 from "d3";
+import {linkAreaHorizontal, linkAreaVertical} from "../src/index.js";
+
+const $ = id => document.getElementById(id);
+const W = 480, H = 400, nodeW = 14;
+
+// The classic approach: top and bottom edges are the same Bézier shifted vertically.
+function offsetBeziers(x0, y0, w0, x1, y1, w1, k) {
+  const cx0 = x0 + (x1 - x0) * k, cx1 = x1 - (x1 - x0) * k;
+  return `M${x0},${y0 - w0 / 2}C${cx0},${y0 - w0 / 2} ${cx1},${y1 - w1 / 2} ${x1},${y1 - w1 / 2}`
+       + `L${x1},${y1 + w1 / 2}C${cx1},${y1 + w1 / 2} ${cx0},${y0 + w0 / 2} ${x0},${y0 + w0 / 2}Z`;
+}
+
+// Point and tangent of the centerline at t = 0.5 (the steepest point).
+function midpoint(x0, y0, x1, y1, k) {
+  const cx0 = x0 + (x1 - x0) * k, cx1 = x1 - (x1 - x0) * k;
+  return {
+    x: (x0 + 3 * cx0 + 3 * cx1 + x1) / 8, y: (y0 + y1) / 2,
+    dx: 0.75 * ((cx0 - x0) + 2 * (cx1 - cx0) + (x1 - cx1)), dy: 1.5 * (y1 - y0)
+  };
+}
+
+// Thickness across the band along the normal at the midpoint, found by ray casting on the rendered path.
+function thicknessAlongNormal(pathEl, m) {
+  const l = Math.hypot(m.dx, m.dy), nx = -m.dy / l, ny = m.dx / l;
+  const svg = pathEl.ownerSVGElement, pt = svg.createSVGPoint();
+  const inside = s => (pt.x = m.x + nx * s, pt.y = m.y + ny * s, pathEl.isPointInFill(pt));
+  const edge = dir => { let a = 0, b = 400; for (let i = 0; i < 40; ++i) { const c = (a + b) / 2; inside(c * dir) ? a = c : b = c; } return a; };
+  const a = edge(1), b = edge(-1);
+  return {len: a + b, p0: [m.x + nx * a, m.y + ny * a], p1: [m.x - nx * b, m.y - ny * b]};
+}
+
+function draw(id, kind) {
+  const dy = +$("dy").value, w0 = +$("w0").value, w1 = +$("w1").value, gap = +$("gap").value, k = +$("k").value, f = +$("f").value, tol = +$("tol").value;
+  const x0 = (W - gap) / 2, x1 = x0 + gap, y0 = (H - dy) / 2, y1 = y0 + dy;
+  const color = kind === "old" ? "var(--old)" : "var(--new)";
+  const d = kind === "old"
+    ? offsetBeziers(x0, y0, w0, x1, y1, w1, k)
+    : linkAreaHorizontal().curvature(k).fillet(f).tolerance(tol)({source: [x0, y0, w0], target: [x1, y1, w1]});
+
+  const svg = d3.select($(id)).attr("viewBox", [0, 0, W, H]);
+  svg.selectAll("*").remove();
+  svg.append("rect").attr("x", x0 - nodeW).attr("y", y0 - w0 / 2).attr("width", nodeW).attr("height", w0).attr("fill", "var(--node)");
+  svg.append("rect").attr("x", x1).attr("y", y1 - w1 / 2).attr("width", nodeW).attr("height", w1).attr("fill", "var(--node)");
+  const band = svg.append("path").attr("d", d).attr("fill", color).attr("fill-opacity", 0.75);
+  if ($("showOutline").checked) svg.append("path").attr("class", "outline").attr("d", d);
+  if ($("showCenter").checked) svg.append("path").attr("class", "center")
+    .attr("d", d3.linkHorizontal()({source: [x0, y0], target: [x1, y1]}));
+
+  const m = midpoint(x0, y0, x1, y1, k), t = thicknessAlongNormal(band.node(), m);
+  svg.append("line").attr("class", "measure").attr("x1", t.p0[0]).attr("y1", t.p0[1]).attr("x2", t.p1[0]).attr("y2", t.p1[1]);
+  const expected = (w0 + w1) / 2;
+  const curves = (d.match(/C/g) || []).length;
+  $(`t-${kind}`).textContent = `${t.len.toFixed(1)}px across at midpoint (expected ${expected.toFixed(1)}) · ${curves} curves`;
+}
+
+function update() {
+  for (const id of ["dy", "w0", "w1", "gap", "k", "f", "tol"]) $(`o-${id}`).textContent = $(id).value;
+  draw("old", "old");
+  draw("new", "new");
+}
+
+for (const el of document.querySelectorAll("input")) el.addEventListener("input", update);
+update();
+
+// Download buttons: each figure's SVG, with CSS variables and classes resolved
+// into plain attributes so it opens correctly in Illustrator, Figma or Inkscape.
+const styleProps = ["fill", "fill-opacity", "stroke", "stroke-width", "stroke-dasharray", "stroke-opacity", "font-family", "font-size"];
+
+function exportSVG(svg, name) {
+  const clone = svg.cloneNode(true), src = svg.querySelectorAll("*"), dst = clone.querySelectorAll("*");
+  src.forEach((el, i) => {
+    const cs = getComputedStyle(el);
+    for (const p of styleProps) {
+      const v = cs.getPropertyValue(p);
+      if (v && !(p.startsWith("font") && el.tagName !== "text")) dst[i].setAttribute(p, v);
+    }
+    dst[i].removeAttribute("class");
+  });
+  const [, , w, h] = svg.getAttribute("viewBox").split(/[ ,]+/).map(Number);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("width", w);
+  clone.setAttribute("height", h);
+  clone.removeAttribute("id");
+  const blob = new Blob([new XMLSerializer().serializeToString(clone)], {type: "image/svg+xml"});
+  const a = Object.assign(document.createElement("a"), {href: URL.createObjectURL(blob), download: `${name}.svg`});
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+for (const svg of document.querySelectorAll("figure svg")) {
+  const button = Object.assign(document.createElement("button"), {className: "download", textContent: "Download SVG"});
+  button.addEventListener("click", () => exportSVG(svg, `d3-link-area-${svg.id}`));
+  svg.closest("figure").append(button);
+}
+
+// Alluvial: two columns, the target column uses a different scale, so every flow changes width.
+(function alluvial() {
+  const w = 960, h = 420, pad = 8, sx0 = 120, sx1 = 840;
+  const sources = ["A", "B", "C", "D"], targets = ["North", "Centre", "South"];
+  const flows = [
+    ["A", "North", 30], ["A", "South", 18], ["B", "North", 12], ["B", "Centre", 40],
+    ["C", "Centre", 10], ["C", "South", 34], ["D", "North", 22], ["D", "Centre", 8], ["D", "South", 16]
+  ];
+  const total = d3.sum(flows, f => f[2]);
+  const ks = (h - pad * (sources.length - 1)) / total;          // source scale
+  const kt = (h * 0.7 - pad * (targets.length - 1)) / total;    // target scale: a narrower column
+  const offT = h * 0.15;
+
+  const stack = (keys, side, k, off) => {
+    const pos = new Map(); let y = off;
+    for (const key of keys) {
+      const v = d3.sum(flows.filter(f => f[side] === key), f => f[2]);
+      pos.set(key, {y, h: v * k, cursor: y}); y += v * k + pad;
+    }
+    return pos;
+  };
+  const S = stack(sources, 0, ks, 0), T = stack(targets, 1, kt, offT);
+  const color = d3.scaleOrdinal(sources, ["#2f6db3", "#c8553d", "#3a8f6b", "#8a5fb0"]);
+
+  const sorted = flows.slice().sort((a, b) => targets.indexOf(a[1]) - targets.indexOf(b[1]));
+  const links = sorted.map(([s, t, v]) => {
+    const a = S.get(s), ws = v * ks, ys = a.cursor + ws / 2; a.cursor += ws;
+    return {s, t, ys, ws};
+  });
+  for (const t of targets) for (const l of links.filter(l => l.t === t).sort((a, b) => a.ys - b.ys)) {
+    const b = T.get(t), wt = flows.find(f => f[0] === l.s && f[1] === l.t)[2] * kt;
+    l.yt = b.cursor + wt / 2; l.wt = wt; b.cursor += wt;
+  }
+
+  const link = linkAreaHorizontal()
+    .source(d => [sx0, d.ys, d.ws])
+    .target(d => [sx1, d.yt, d.wt]);
+
+  const svg = d3.select("#alluvial").attr("viewBox", [0, -10, w, h + 20]);
+  svg.append("g").selectAll("path").data(links).join("path")
+    .attr("d", link).attr("fill", d => color(d.s)).attr("fill-opacity", 0.7);
+  const nodes = [...[...S].map(([k, v]) => ({k, x: sx0 - nodeW, ...v, a: "end", tx: -6})),
+                 ...[...T].map(([k, v]) => ({k, x: sx1, ...v, a: "start", tx: nodeW + 6}))];
+  const g = svg.append("g").selectAll("g").data(nodes).join("g");
+  g.append("rect").attr("x", d => d.x).attr("y", d => d.y).attr("width", nodeW).attr("height", d => d.h).attr("fill", "var(--node)");
+  g.append("text").attr("x", d => d.x + d.tx).attr("y", d => d.y + d.h / 2).attr("dy", "0.35em")
+    .attr("text-anchor", d => d.a).attr("font-size", 13).text(d => d.k);
+})();
+
+// Vertical: a small fan-out.
+(function vertical() {
+  const w = 960, h = 280, nodeH = 12;
+  const targets = d3.range(6).map(i => ({x: 90 + i * 156, w: 10 + i * 9}));
+  const total = d3.sum(targets, t => t.w);
+  let cursor = w / 2 - total / 2;
+  for (const t of targets) t.sx = cursor + t.w / 2, cursor += t.w;
+  const link = linkAreaVertical()
+    .source(d => [d.sx, 0, d.w])
+    .target(d => [d.x, h, d.w * 1.8]);
+  const svg = d3.select("#vertical").attr("viewBox", [0, -nodeH, w, h + 2 * nodeH]);
+  svg.append("g").selectAll("path").data(targets).join("path").attr("d", link).attr("fill", "var(--new)").attr("fill-opacity", 0.7);
+  svg.append("rect").attr("x", w / 2 - total / 2).attr("y", -nodeH).attr("width", total).attr("height", nodeH).attr("fill", "var(--node)");
+  svg.append("g").selectAll("rect").data(targets).join("rect")
+    .attr("x", d => d.x - d.w * 0.9).attr("y", h).attr("width", d => d.w * 1.8).attr("height", nodeH).attr("fill", "var(--node)");
+})();
+</script>
+</body>
+</html>
